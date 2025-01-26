@@ -12,6 +12,6 @@ contract Config {
     IERC20 constant token1 = IERC20(address(0xa513E6E4b8f2a923D98304ec87F64353C4D5C853));
     IHooks constant hookContract = IHooks(address(0x0));
 
-    Currency constant currency0 = Currency.wrap(address(token0));
-    Currency constant currency1 = Currency.wrap(address(token1));
+    Currency currency0 = Currency.wrap(address(token0));
+    Currency currency1 = Currency.wrap(address(token1));
 }

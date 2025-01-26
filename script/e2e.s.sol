@@ -2,22 +2,30 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
+
+import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {IPositionManager} from "v4-periphery/src/PositionManager.sol";
+import {Hooks} from "v4-core/src/libraries/Hooks.sol";
+import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {Actions} from "v4-periphery/src/libraries/Actions.sol";
 import {LiquidityAmounts} from "v4-core/test/utils/LiquidityAmounts.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
+import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 
 import {EasyPosm} from "../test/utils/EasyPosm.sol";
 import {Constants} from "./base/Constants.sol";
 import {Config} from "./base/Config.sol";
 
+import {HookMiner} from "../test/utils/HookMiner.sol";
 import {HookFee} from "../src/examples/HookFee.sol";
 import {MinimalRouter} from "../src/MinimalRouter.sol";
 
 contract EndToEndScript is Script, Constants, Config {
+    using StateLibrary for IPoolManager;
     using EasyPosm for IPositionManager;
     using CurrencyLibrary for Currency;
 
@@ -57,16 +65,39 @@ contract EndToEndScript is Script, Constants, Config {
             minRouter = MinimalRouter(address(0x0));
         }
 
+        if (deployHook) {
+            hookFee = deployHookFee();
+        } else {
+            // TODO set to address once its deployed
+            hookFee = HookFee(address(0x0));
+        }
+
         if (deployMockERC20) {
-            deployMockTokens();
+            vm.startBroadcast();
+            MockERC20 tokenA = new MockERC20("MockTokenA", "MOCKA", 18);
+            MockERC20 tokenB = new MockERC20("MockTokenB", "MOCKB", 18);
+
+            // Mint balance
+            tokenA.mint(msg.sender, 10_000e18);
+            tokenB.mint(msg.sender, 10_000e18);
+
             // approve addresses
+            tokenApprovals(IERC20(address(tokenA)), IERC20(address(tokenB)));
+            tokenA.approve(address(minRouter), type(uint256).max);
+            tokenB.approve(address(minRouter), type(uint256).max);
+            vm.stopBroadcast();
+
             // tokens should be sorted
+            (currency0, currency1) = uint160(address(tokenA)) < uint160(address(tokenB))
+                ? (Currency.wrap(address(tokenA)), Currency.wrap(address(tokenB)))
+                : (Currency.wrap(address(tokenB)), Currency.wrap(address(tokenA)));
+
             poolKey = PoolKey({
                 currency0: currency0,
                 currency1: currency1,
                 fee: lpFee,
                 tickSpacing: tickSpacing,
-                hooks: hookContract
+                hooks: IHooks(address(hookFee))
             });
         } else {
             // TODO set to address once its deployed
@@ -76,14 +107,8 @@ contract EndToEndScript is Script, Constants, Config {
                 currency1: Currency.wrap(address(0x0)),
                 fee: lpFee,
                 tickSpacing: tickSpacing,
-                hooks: hookContract
+                hooks: IHooks(address(hookFee))
             });
-        }
-
-        if (deployHook) {
-            deployHookFee();
-        } else {
-            // TODO set to address once its deployed
         }
 
         if (initializePool) {
@@ -91,57 +116,35 @@ contract EndToEndScript is Script, Constants, Config {
         }
 
         if (addLiquidity) {
-            addLiquidity(poolKey);
+            addLiquidityPOSM(poolKey);
         }
 
         bytes memory hookData = new bytes(0);
-        minRouter.swap(key, false, false, 1e18, hookData);
-        minRouter.swap(key, false, true, 1e18, hookData);
-        minRouter.swap(key, true, false, 1e18, hookData);
-        minRouter.swap(key, true, true, 1e18, hookData);
-
-        // --------------------------------- //
-
-        // Converts token amounts to liquidity units
-        uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
-            startingPrice,
-            TickMath.getSqrtPriceAtTick(tickLower),
-            TickMath.getSqrtPriceAtTick(tickUpper),
-            token0Amount,
-            token1Amount
-        );
-
-        // slippage limits
-        uint256 amount0Max = token0Amount + 1 wei;
-        uint256 amount1Max = token1Amount + 1 wei;
-
-        (bytes memory actions, bytes[] memory mintParams) =
-            _mintLiquidityParams(pool, tickLower, tickUpper, liquidity, amount0Max, amount1Max, address(this), hookData);
-
-        // multicall parameters
-        bytes[] memory params = new bytes[](2);
-
-        // initialize pool
-        params[0] = abi.encodeWithSelector(posm.initializePool.selector, pool, startingPrice, hookData);
-
-        // mint liquidity
-        params[1] = abi.encodeWithSelector(
-            posm.modifyLiquidities.selector, abi.encode(actions, mintParams), block.timestamp + 60
-        );
-
-        // if the pool is an ETH pair, native tokens are to be transferred
-        uint256 valueToPass = currency0.isAddressZero() ? amount0Max : 0;
-
         vm.startBroadcast();
-        tokenApprovals();
+        minRouter.swap(poolKey, false, false, 1e18, hookData);
+        minRouter.swap(poolKey, false, true, 1e18, hookData);
+        minRouter.swap(poolKey, true, false, 1e18, hookData);
+        minRouter.swap(poolKey, true, true, 1e18, hookData);
         vm.stopBroadcast();
-
-        // multicall to atomically create pool & add liquidity
-        vm.broadcast();
-        posm.multicall{value: valueToPass}(params);
     }
 
-    function addLiquidity(PoolKey memory key) internal {
+    function deployHookFee() internal returns (HookFee) {
+        // hook contracts must have specific flags encoded in the address
+        uint160 flags = uint160(Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG);
+
+        // Mine a salt that will produce a hook address with the correct flags
+        bytes memory constructorArgs = abi.encode(POOLMANAGER);
+        (address hookAddress, bytes32 salt) =
+            HookMiner.find(CREATE2_DEPLOYER, flags, type(HookFee).creationCode, constructorArgs);
+
+        // Deploy the hook using CREATE2
+        vm.broadcast();
+        HookFee _hookFee = new HookFee{salt: salt}(IPoolManager(POOLMANAGER));
+        require(address(_hookFee) == hookAddress, "HookFeeScript: hook address mismatch");
+        return _hookFee;
+    }
+
+    function addLiquidityPOSM(PoolKey memory key) internal {
         (uint160 sqrtPriceX96,,,) = POOLMANAGER.getSlot0(key.toId());
 
         // Converts token amounts to liquidity units
@@ -159,7 +162,7 @@ contract EndToEndScript is Script, Constants, Config {
 
         vm.startBroadcast();
         IPositionManager(address(posm)).mint(
-            key, tickLower, tickUpper, liquidity, amount0Max, amount1Max, msg.sender, block.timestamp + 60, hookData
+            key, tickLower, tickUpper, liquidity, amount0Max, amount1Max, msg.sender, block.timestamp + 60, ""
         );
         vm.stopBroadcast();
     }
@@ -184,14 +187,14 @@ contract EndToEndScript is Script, Constants, Config {
         return (actions, params);
     }
 
-    function tokenApprovals() public {
+    function tokenApprovals(IERC20 _token0, IERC20 _token1) public {
         if (!currency0.isAddressZero()) {
-            token0.approve(address(PERMIT2), type(uint256).max);
-            PERMIT2.approve(address(token0), address(posm), type(uint160).max, type(uint48).max);
+            _token0.approve(address(PERMIT2), type(uint256).max);
+            PERMIT2.approve(address(_token0), address(posm), type(uint160).max, type(uint48).max);
         }
         if (!currency1.isAddressZero()) {
-            token1.approve(address(PERMIT2), type(uint256).max);
-            PERMIT2.approve(address(token1), address(posm), type(uint160).max, type(uint48).max);
+            _token1.approve(address(PERMIT2), type(uint256).max);
+            PERMIT2.approve(address(_token1), address(posm), type(uint160).max, type(uint48).max);
         }
     }
 }
