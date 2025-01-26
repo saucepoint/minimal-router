@@ -13,7 +13,7 @@ import {SafeCast} from "v4-core/src/libraries/SafeCast.sol";
 import {CurrencySettler} from "v4-core/test/utils/CurrencySettler.sol";
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
-contract FixedHookFee is BaseHook {
+contract HookFee is BaseHook {
     using CurrencyLibrary for Currency;
     using CurrencySettler for Currency;
     using SafeCast for uint256;

@@ -49,6 +49,9 @@ contract MinimalRouter is SafeCallback {
         if (delta.amount0() < 0) key.currency0.settle(poolManager, sender, uint256(int256(-delta.amount0())), false);
         else if (delta.amount0() > 0) key.currency0.take(poolManager, sender, uint256(int256(delta.amount0())), false);
 
+        if (delta.amount1() < 0) key.currency1.settle(poolManager, sender, uint256(int256(-delta.amount1())), false);
+        else if (delta.amount1() > 0) key.currency1.take(poolManager, sender, uint256(int256(delta.amount1())), false);
+
         return abi.encode(delta);
     }
 }
