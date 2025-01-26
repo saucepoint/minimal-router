@@ -50,9 +50,7 @@ contract MinimalRouterTest is Test, Fixtures {
 
         // Deploy the hook to an address with the correct flags
         address flags = address(
-            uint160(
-                Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-            ) ^ (0x4444 << 144) // Namespace the hook to avoid collisions
+            uint160(Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG) ^ (0x4444 << 144) // Namespace the hook to avoid collisions
         );
         bytes memory constructorArgs = abi.encode(manager); //Add all the necessary constructor arguments from the hook
         deployCodeTo("HookFee.sol:HookFee", constructorArgs, flags);
