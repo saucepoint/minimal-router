@@ -42,14 +42,19 @@ contract EndToEndScript is Script, Constants, Config {
     uint160 startingPrice = 79228162514264337593543950336; // floor(sqrt(1) * 2^96)
 
     // --- liquidity position configuration --- //
-    uint256 public token0Amount = 1e18;
-    uint256 public token1Amount = 1e18;
+    uint256 public token0Amount = 100e18;
+    uint256 public token1Amount = 100e18;
 
     // range of the position
     int24 tickLower = -600; // must be a multiple of tickSpacing
     int24 tickUpper = 600;
     /////////////////////////////////////
 
+    // forge script script/e2e.s.sol \
+    // --rpc-url https://mainnet.base.org \
+    // --sig "run(bool,bool,bool,bool,bool)" true true true true true
+    // --etherscan-api-key $BASE_SEPOLIA_ETHERSCAN_API_KEY --verify
+    // --private-key $TEMP_PK
     function run(bool deployMinRouter, bool deployMockERC20, bool deployHook, bool initializePool, bool addLiquidity)
         external
     {
@@ -112,6 +117,7 @@ contract EndToEndScript is Script, Constants, Config {
         }
 
         if (initializePool) {
+            vm.broadcast();
             POOLMANAGER.initialize(poolKey, startingPrice);
         }
 
